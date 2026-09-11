@@ -1256,12 +1256,26 @@ pam_sm_authenticate (pam_handle_t * pamh,
 
   password_len = strlen (password);
 
-  /* In case the input was systempassword+OTP, we want to skip over
-     "systempassword" when copying the token_id and OTP to separate buffers */
-  if(password_len > cfg->token_id_length + TOKEN_OTP_LEN)
-    {
-      skip_bytes = password_len - (cfg->token_id_length + TOKEN_OTP_LEN);
-    }
+  /*
+  * In client mode, accept only a complete YubiKey OTP:
+  * public ID: cfg->token_id_length bytes
+  * encrypted OTP: TOKEN_OTP_LEN bytes
+  * With token_id_length=12, the required total length is exactly 44.
+  * Reject shorter and longer values instead of interpreting extra
+  * characters as a system password prepended to the OTP.
+  */
+ if (password_len != cfg->token_id_length + TOKEN_OTP_LEN)
+   {
+     DBG ("Invalid YubiKey OTP length: received %zu bytes, expected exactly %u",
+          password_len,
+          cfg->token_id_length + TOKEN_OTP_LEN);
+     retval = PAM_AUTH_ERR;
+     goto done;
+   }
+  /*
+  * Strict OTP mode: nothing may precede the YubiKey OTP.
+  */
+  skip_bytes = 0;
 
   DBG ("Skipping first %i bytes. Length is %zu, token_id set to %u and token OTP always %u.",
 	skip_bytes, password_len, cfg->token_id_length, TOKEN_OTP_LEN);
@@ -1271,29 +1285,10 @@ pam_sm_authenticate (pam_handle_t * pamh,
   /* Copy only public ID into otp_id. Destination buffer is zeroed. */
   strncpy (otp_id, password + skip_bytes, cfg->token_id_length);
 
-  /* user entered their system password followed by generated OTP? */
-  if (password_len > TOKEN_OTP_LEN + cfg->token_id_length)
-    {
-      onlypasswd = strdup (password);
-
-      if (! onlypasswd) {
-	retval = PAM_BUF_ERR;
-	goto done;
-      }
-
-      onlypasswd[password_len - (TOKEN_OTP_LEN + cfg->token_id_length)] = '\0';
-
-      DBG ("Extracted a probable system password entered before the OTP - "
-	    "setting item PAM_AUTHTOK");
-
-      retval = pam_set_item (pamh, PAM_AUTHTOK, onlypasswd);
-      if (retval != PAM_SUCCESS)
-	{
-	  DBG ("set_item returned error: %s", pam_strerror (pamh, retval));
-	  goto done;
-	}
-    }
-  else
+  /*
+  * Strict OTP mode: system-password-plus-OTP is not supported.
+  * Do not propagate any prefix as PAM_AUTHTOK.
+  */
     password = NULL;
 
   /* authorize the user with supplied token id */
