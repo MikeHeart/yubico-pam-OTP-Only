@@ -448,24 +448,56 @@ authorize_user_token_ldap (struct cfg *cfg,
 	      /* Compare each value for the attribute against the token id. */
 	      for (i = 0; vals[i] != NULL; i++)
 		{
-		  DBG("LDAP : Checking value %zu: %s:%s",
-		      i + 1,
-		      cfg->yubi_attr_prefix ? cfg->yubi_attr_prefix : "",
-		      vals[i]->bv_val);
+		  size_t expected_len = yubi_attr_prefix_len + cfg->token_id_length;
+		  size_t token_pos;
+		  int valid_modhex = 1;
 
-		  /* Only values containing this prefix are considered. */
-		  if ((!cfg->yubi_attr_prefix || !strncmp (cfg->yubi_attr_prefix, vals[i]->bv_val, yubi_attr_prefix_len)))
-		    {
-		      /* We have found at least one possible token ID so change the default return value to AUTH_NOT_FOUND */
-		      if (retval == AUTH_NO_TOKENS)
-		        {
-		          retval = AUTH_NOT_FOUND;
-		        }
-		      if(token_id && !strncmp(token_id, vals[i]->bv_val + yubi_attr_prefix_len, cfg->token_id_length))
-		        {
-		          DBG ("Token found :: %s", vals[i]->bv_val);
-		          retval = AUTH_FOUND;
-		        }
+		  DBG("LDAP : Checking value %zu (length=%zu, expected=%zu)",
+			i + 1, (size_t) vals[i]->bv_len, expected_len);
+
+		  /* Require exactly prefix length plus token_id_length bytes. */
+		  if ((size_t) vals[i]->bv_len != expected_len)
+			{
+			  DBG("LDAP : Rejecting value %zu: invalid length %zu, expected %zu",
+				  i + 1, (size_t) vals[i]->bv_len, expected_len);
+			  continue;
+			}
+
+		  if (yubi_attr_prefix_len > 0 &&
+			memcmp(cfg->yubi_attr_prefix, vals[i]->bv_val,
+				   yubi_attr_prefix_len) != 0)
+			{
+			  DBG("LDAP : Rejecting value %zu: invalid prefix", i + 1);
+			  continue;
+			}
+
+		  for (token_pos = yubi_attr_prefix_len;
+				 token_pos < expected_len; token_pos++)
+			{
+			  if (strchr("cbdefghijklnrtuv", vals[i]->bv_val[token_pos]) == NULL)
+				{
+				  valid_modhex = 0;
+				  break;
+				}
+			}
+
+		  if (!valid_modhex)
+			{
+			  DBG("LDAP : Rejecting value %zu: token ID is not valid modhex", i + 1);
+			  continue;
+			}
+
+		  if (retval == AUTH_NO_TOKENS)
+			retval = AUTH_NOT_FOUND;
+
+		  if (token_id != NULL &&
+			strlen(token_id) == cfg->token_id_length &&
+			memcmp(token_id, vals[i]->bv_val + yubi_attr_prefix_len,
+				   cfg->token_id_length) == 0)
+			{
+			  DBG("Token found in LDAP value %zu", i + 1);
+			  retval = AUTH_FOUND;
+			  break;
 		    }
 		}
 	      ldap_value_free_len (vals);
